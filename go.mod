@@ -1,4 +1,4 @@
-module github.com/aeden/traceroute
+module github.com/hellopoisonx/traceroute
 
 go 1.18
 
