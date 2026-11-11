@@ -204,6 +204,10 @@ func closeNotify(channels []chan TracerouteHop) {
 // Returns a TracerouteResult which contains an array of hops. Each hop
 // includes the elapsed time and its IP address.
 func Traceroute(dest string, options *TracerouteOptions, c ...chan TracerouteHop) (result TracerouteResult, err error) {
+	// Consumers range over the channels; without this they block forever when
+	// the trace fails early (bad hostname, no source address, EPERM).
+	defer closeNotify(c)
+
 	result.Hops = []TracerouteHop{}
 	destAddr, err := destAddr(dest, options.IPv6())
 	if err != nil {
@@ -298,7 +302,6 @@ func Traceroute(dest string, options *TracerouteOptions, c ...chan TracerouteHop
 			retry = 0
 
 			if ttl > options.MaxHops() || currAddr.Equal(destAddr) {
-				closeNotify(c)
 				return result, nil
 			}
 		} else {
@@ -310,7 +313,6 @@ func Traceroute(dest string, options *TracerouteOptions, c ...chan TracerouteHop
 			}
 
 			if ttl > options.MaxHops() {
-				closeNotify(c)
 				return result, nil
 			}
 		}

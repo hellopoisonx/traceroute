@@ -3,17 +3,26 @@ package traceroute
 import (
 	"fmt"
 	"net"
+	"os"
 	"testing"
+	"time"
 )
+
+// skipUnlessE2E keeps Internet-dependent traces out of `go test ./...`: with
+// default options a filtered path costs MaxHops*Retries*TimeoutMs (~2 minutes).
+func skipUnlessE2E(t *testing.T) {
+	t.Helper()
+	if testing.Short() || os.Getenv("TRACEROUTE_E2E") == "" {
+		t.Skip("set TRACEROUTE_E2E=1 to trace google.com; needs Internet and raw-socket access")
+	}
+}
 
 func printHop(hop TracerouteHop) {
 	fmt.Printf("%-3d %v (%v)  %v\n", hop.TTL, hop.HostOrAddressString(), hop.AddressString(), hop.ElapsedTime)
 }
 
 func TestTraceroute(t *testing.T) {
-	if testing.Short() {
-		t.Skip("requires Internet and raw-socket access")
-	}
+	skipUnlessE2E(t)
 	fmt.Printf("Testing synchronous traceroute\n\n")
 	out, err := Traceroute("google.com", new(TracerouteOptions))
 	if err == nil {
@@ -31,9 +40,7 @@ func TestTraceroute(t *testing.T) {
 }
 
 func TestTraceouteChannel(t *testing.T) {
-	if testing.Short() {
-		t.Skip("requires Internet and raw-socket access")
-	}
+	skipUnlessE2E(t)
 	fmt.Printf("Testing asynchronous traceroute\n\n")
 	c := make(chan TracerouteHop, 0)
 	go func() {
@@ -54,6 +61,28 @@ func TestTraceouteChannel(t *testing.T) {
 		}
 	} else {
 		t.Errorf("TestTraceroute failed due to an error: %v", err)
+	}
+}
+
+func TestTracerouteClosesChannelsOnError(t *testing.T) {
+	c := make(chan TracerouteHop)
+	done := make(chan struct{})
+	go func() {
+		for range c {
+		}
+		close(done)
+	}()
+
+	// An IPv6 literal with IPv4 options fails in destAddr without touching DNS,
+	// so this stays fast in any resolver setup.
+	if _, err := Traceroute("::1", new(TracerouteOptions), c); err == nil {
+		t.Fatal("Traceroute(\"::1\") = nil error, want destination resolution failure")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("channel not closed after an early error; consumers block forever")
 	}
 }
 

@@ -21,6 +21,16 @@ Exceeded and the destination with ICMP Port Unreachable. `options.SetICMP(true)`
 switches to ICMP Echo Request probes, answered by an Echo Reply from the
 destination (`Port()` does not apply in that mode).
 
+## Testing
+
+`go test ./...` runs only offline tests. The end-to-end traces against
+`google.com` (Internet and raw-socket access required) are opt-in and take
+minutes on a filtered path:
+
+```bash
+TRACEROUTE_E2E=1 go test -run 'TestTraceroute|TestTraceouteChannel' -v .
+```
+
 ## Resources
 
 Useful resources:
