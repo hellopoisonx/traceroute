@@ -78,6 +78,9 @@ func TestOptionsDefaults(t *testing.T) {
 	if options.IPv6() {
 		t.Error("IPv6() default = true, want false")
 	}
+	if options.ICMP() {
+		t.Error("ICMP() default = true, want false")
+	}
 
 	options.SetPort(33440)
 	options.SetMaxHops(5)
@@ -86,10 +89,12 @@ func TestOptionsDefaults(t *testing.T) {
 	options.SetRetries(1)
 	options.SetPacketSize(64)
 	options.SetIPv6(true)
+	options.SetICMP(true)
 	if options.Port() != 33440 || options.MaxHops() != 5 || options.FirstHop() != 2 ||
-		options.TimeoutMs() != 100 || options.Retries() != 1 || options.PacketSize() != 64 || !options.IPv6() {
-		t.Errorf("setters not retained: port=%d maxHops=%d firstHop=%d timeoutMs=%d retries=%d packetSize=%d ipv6=%v",
-			options.Port(), options.MaxHops(), options.FirstHop(), options.TimeoutMs(), options.Retries(), options.PacketSize(), options.IPv6())
+		options.TimeoutMs() != 100 || options.Retries() != 1 || options.PacketSize() != 64 ||
+		!options.IPv6() || !options.ICMP() {
+		t.Errorf("setters not retained: port=%d maxHops=%d firstHop=%d timeoutMs=%d retries=%d packetSize=%d ipv6=%v icmp=%v",
+			options.Port(), options.MaxHops(), options.FirstHop(), options.TimeoutMs(), options.Retries(), options.PacketSize(), options.IPv6(), options.ICMP())
 	}
 
 	// Zero means unset: the getter falls back to the default.

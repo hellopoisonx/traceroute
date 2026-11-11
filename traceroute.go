@@ -6,8 +6,10 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"time"
 
+	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 )
@@ -64,6 +66,7 @@ type TracerouteOptions struct {
 	retries    int
 	packetSize int
 	ipv6       bool
+	icmp       bool
 }
 
 func (options *TracerouteOptions) Port() int {
@@ -140,6 +143,16 @@ func (options *TracerouteOptions) SetIPv6(ipv6 bool) {
 	options.ipv6 = ipv6
 }
 
+// ICMP reports whether probes are ICMP Echo Requests instead of UDP datagrams
+// sent to Port(); in ICMP mode the destination answers with an Echo Reply.
+func (options *TracerouteOptions) ICMP() bool {
+	return options.icmp
+}
+
+func (options *TracerouteOptions) SetICMP(useICMP bool) {
+	options.icmp = useICMP
+}
+
 type TracerouteHop struct {
 	Success     bool
 	Address     net.IP
@@ -181,11 +194,15 @@ func closeNotify(channels []chan TracerouteHop) {
 // Traceroute uses the given dest (hostname) and options to execute a traceroute
 // from your machine to the remote host.
 //
-// Outbound packets are UDP packets and inbound packets are ICMP (ICMPv6 when
-// options.IPv6() is set).
+// Two probe modes are supported. The default sends UDP datagrams to
+// options.Port(): intermediate hops answer with ICMP Time Exceeded and the
+// destination with ICMP Port Unreachable. With options.SetICMP(true) the
+// probes are ICMP Echo Requests instead and the destination answers with an
+// Echo Reply; Port() does not apply in that mode. Inbound packets are ICMP
+// (ICMPv6 when options.IPv6() is set).
 //
-// Returns a TracerouteResult which contains an array of hops. Each hop includes
-// the elapsed time and its IP address.
+// Returns a TracerouteResult which contains an array of hops. Each hop
+// includes the elapsed time and its IP address.
 func Traceroute(dest string, options *TracerouteOptions, c ...chan TracerouteHop) (result TracerouteResult, err error) {
 	result.Hops = []TracerouteHop{}
 	destAddr, err := destAddr(dest, options.IPv6())
@@ -202,9 +219,12 @@ func Traceroute(dest string, options *TracerouteOptions, c ...chan TracerouteHop
 
 	// IPv6 answers with ICMPv6 and uses the hop limit where IPv4 uses the TTL.
 	recvNetwork, sendNetwork := "ip4:icmp", "udp4"
+	var echoType icmp.Type = ipv4.ICMPTypeEcho
 	if options.IPv6() {
 		recvNetwork, sendNetwork = "ip6:ipv6-icmp", "udp6"
+		echoType = ipv6.ICMPTypeEchoRequest
 	}
+	echoID := os.Getpid() & 0xffff
 
 	ttl := options.FirstHop()
 	retry := 0
@@ -217,26 +237,41 @@ func Traceroute(dest string, options *TracerouteOptions, c ...chan TracerouteHop
 		}
 		defer recvSocket.Close()
 
+		// In ICMP mode the raw receive socket also sends the echo requests.
+		var sendConn net.PacketConn = recvSocket
+		if !options.ICMP() {
+			sendConn, err = net.ListenUDP(sendNetwork, nil)
+			if err != nil {
+				return result, err
+			}
+			defer sendConn.Close()
+		}
+
 		if err := recvSocket.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 			return result, err
 		}
 
-		sendSocket, err := net.ListenUDP(sendNetwork, nil)
-		if err != nil {
-			return result, err
-		}
-		defer sendSocket.Close()
-
 		if options.IPv6() {
-			err = ipv6.NewPacketConn(sendSocket).SetHopLimit(ttl)
+			err = ipv6.NewPacketConn(sendConn).SetHopLimit(ttl)
 		} else {
-			err = ipv4.NewPacketConn(sendSocket).SetTTL(ttl)
+			err = ipv4.NewPacketConn(sendConn).SetTTL(ttl)
 		}
 		if err != nil {
 			return result, err
 		}
 
-		if _, err := sendSocket.WriteToUDP([]byte{0x0}, &net.UDPAddr{IP: destAddr, Port: options.Port()}); err != nil {
+		if options.ICMP() {
+			// The kernel computes the ICMPv6 checksum for raw ip6:ipv6-icmp
+			// sockets, so Marshal(nil) leaving it zero is fine there.
+			wb, marshalErr := (&icmp.Message{Type: echoType, Code: 0, Body: &icmp.Echo{ID: echoID, Seq: ttl}}).Marshal(nil)
+			if marshalErr != nil {
+				return result, marshalErr
+			}
+			_, err = recvSocket.WriteToIP(wb, &net.IPAddr{IP: destAddr})
+		} else {
+			_, err = sendConn.WriteTo([]byte{0x0}, &net.UDPAddr{IP: destAddr, Port: options.Port()})
+		}
+		if err != nil {
 			return result, err
 		}
 

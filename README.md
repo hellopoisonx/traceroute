@@ -2,8 +2,6 @@
 
 A traceroute library written in Go.
 
-Must be run as sudo on OS X (and others)?
-
 ## Library
 
 ```go
@@ -16,6 +14,12 @@ The traceroute.Traceroute() function accepts a domain name and an options struct
 
 IPv4 is used unless the options ask for IPv6 (`options.SetIPv6(true)`), in which case the
 destination is resolved and probed over IPv6 with ICMPv6 replies.
+
+Two probe modes are supported. By default the probes are UDP datagrams sent to
+`options.Port()` (default 33434): intermediate hops answer with ICMP Time
+Exceeded and the destination with ICMP Port Unreachable. `options.SetICMP(true)`
+switches to ICMP Echo Request probes, answered by an Echo Reply from the
+destination (`Port()` does not apply in that mode).
 
 ## Resources
 
