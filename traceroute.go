@@ -4,53 +4,58 @@ package traceroute
 
 import (
 	"errors"
-	"fmt"
 	"net"
-	"syscall"
 	"time"
+
+	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 )
 
-const DEFAULT_PORT = 33434
-const DEFAULT_MAX_HOPS = 64
-const DEFAULT_FIRST_HOP = 1
-const DEFAULT_TIMEOUT_MS = 500
-const DEFAULT_RETRIES = 3
-const DEFAULT_PACKET_SIZE = 52
+const (
+	DEFAULT_PORT        = 33434
+	DEFAULT_MAX_HOPS    = 64
+	DEFAULT_FIRST_HOP   = 1
+	DEFAULT_TIMEOUT_MS  = 500
+	DEFAULT_RETRIES     = 3
+	DEFAULT_PACKET_SIZE = 52
+)
 
-// Return the first non-loopback address as a 4 byte IP address. This address
+// Return the first non-loopback address of the requested family. This address
 // is used for sending packets out.
-func socketAddr() (addr [4]byte, err error) {
+func socketAddr(useIPv6 bool) (net.IP, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	for _, a := range addrs {
-		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if len(ipnet.IP.To4()) == net.IPv4len {
-				copy(addr[:], ipnet.IP.To4())
-				return
+		ipnet, ok := a.(*net.IPNet)
+		if !ok || ipnet.IP.IsLoopback() {
+			continue
+		}
+		if useIPv6 {
+			// A link-local source cannot reach off-link destinations.
+			if ipnet.IP.To4() == nil && !ipnet.IP.IsLinkLocalUnicast() {
+				return ipnet.IP, nil
 			}
+		} else if ip := ipnet.IP.To4(); ip != nil {
+			return ip, nil
 		}
 	}
-	err = errors.New("You do not appear to be connected to the Internet")
-	return
+	return nil, errors.New("You do not appear to be connected to the Internet")
 }
 
-// Given a host name convert it to a 4 byte IP address.
-func destAddr(dest string) (destAddr [4]byte, err error) {
-	addrs, err := net.LookupHost(dest)
-	if err != nil {
-		return
+// Given a host name convert it to an IP address of the requested family.
+func destAddr(dest string, useIPv6 bool) (net.IP, error) {
+	network := "ip4"
+	if useIPv6 {
+		network = "ip6"
 	}
-	addr := addrs[0]
-
-	ipAddr, err := net.ResolveIPAddr("ip", addr)
+	ipAddr, err := net.ResolveIPAddr(network, dest)
 	if err != nil {
-		return
+		return nil, err
 	}
-	copy(destAddr[:], ipAddr.IP.To4())
-	return
+	return ipAddr.IP, nil
 }
 
 // TracrouteOptions type
@@ -61,6 +66,7 @@ type TracerouteOptions struct {
 	timeoutMs  int
 	retries    int
 	packetSize int
+	ipv6       bool
 }
 
 func (options *TracerouteOptions) Port() int {
@@ -129,10 +135,18 @@ func (options *TracerouteOptions) SetPacketSize(packetSize int) {
 	options.packetSize = packetSize
 }
 
+func (options *TracerouteOptions) IPv6() bool {
+	return options.ipv6
+}
+
+func (options *TracerouteOptions) SetIPv6(ipv6 bool) {
+	options.ipv6 = ipv6
+}
+
 // TracerouteHop type
 type TracerouteHop struct {
 	Success     bool
-	Address     [4]byte
+	Address     net.IP
 	Host        string
 	N           int
 	ElapsedTime time.Duration
@@ -140,7 +154,7 @@ type TracerouteHop struct {
 }
 
 func (hop *TracerouteHop) AddressString() string {
-	return fmt.Sprintf("%v.%v.%v.%v", hop.Address[0], hop.Address[1], hop.Address[2], hop.Address[3])
+	return hop.Address.String()
 }
 
 func (hop *TracerouteHop) HostOrAddressString() string {
@@ -153,7 +167,7 @@ func (hop *TracerouteHop) HostOrAddressString() string {
 
 // TracerouteResult type
 type TracerouteResult struct {
-	DestinationAddress [4]byte
+	DestinationAddress net.IP
 	Hops               []TracerouteHop
 }
 
@@ -172,21 +186,30 @@ func closeNotify(channels []chan TracerouteHop) {
 // Traceroute uses the given dest (hostname) and options to execute a traceroute
 // from your machine to the remote host.
 //
-// Outbound packets are UDP packets and inbound packets are ICMP.
+// Outbound packets are UDP packets and inbound packets are ICMP (ICMPv6 when
+// options.IPv6() is set).
 //
 // Returns a TracerouteResult which contains an array of hops. Each hop includes
 // the elapsed time and its IP address.
 func Traceroute(dest string, options *TracerouteOptions, c ...chan TracerouteHop) (result TracerouteResult, err error) {
 	result.Hops = []TracerouteHop{}
-	destAddr, err := destAddr(dest)
+	destAddr, err := destAddr(dest, options.IPv6())
+	if err != nil {
+		return
+	}
 	result.DestinationAddress = destAddr
-	socketAddr, err := socketAddr()
+	socketAddr, err := socketAddr(options.IPv6())
 	if err != nil {
 		return
 	}
 
-	timeoutMs := (int64)(options.TimeoutMs())
-	tv := syscall.NsecToTimeval(1000 * 1000 * timeoutMs)
+	timeout := time.Duration(options.TimeoutMs()) * time.Millisecond
+
+	// IPv6 answers with ICMPv6 and uses the hop limit where IPv4 uses the TTL.
+	recvNetwork, sendNetwork := "ip4:icmp", "udp4"
+	if options.IPv6() {
+		recvNetwork, sendNetwork = "ip6:ipv6-icmp", "udp6"
+	}
 
 	ttl := options.FirstHop()
 	retry := 0
@@ -195,35 +218,44 @@ func Traceroute(dest string, options *TracerouteOptions, c ...chan TracerouteHop
 		start := time.Now()
 
 		// Set up the socket to receive inbound packets
-		recvSocket, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_ICMP)
+		recvSocket, err := net.ListenIP(recvNetwork, &net.IPAddr{IP: socketAddr})
 		if err != nil {
+			return result, err
+		}
+		defer recvSocket.Close()
+
+		// This sets the timeout to wait for a response from the remote host
+		if err := recvSocket.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 			return result, err
 		}
 
 		// Set up the socket to send packets out.
-		sendSocket, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
+		sendSocket, err := net.ListenUDP(sendNetwork, nil)
 		if err != nil {
 			return result, err
 		}
+		defer sendSocket.Close()
+
 		// This sets the current hop TTL
-		syscall.SetsockoptInt(sendSocket, 0x0, syscall.IP_TTL, ttl)
-		// This sets the timeout to wait for a response from the remote host
-		syscall.SetsockoptTimeval(recvSocket, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv)
-
-		defer syscall.Close(recvSocket)
-		defer syscall.Close(sendSocket)
-
-		// Bind to the local socket to listen for ICMP packets
-		syscall.Bind(recvSocket, &syscall.SockaddrInet4{Port: options.Port(), Addr: socketAddr})
+		if options.IPv6() {
+			err = ipv6.NewPacketConn(sendSocket).SetHopLimit(ttl)
+		} else {
+			err = ipv4.NewPacketConn(sendSocket).SetTTL(ttl)
+		}
+		if err != nil {
+			return result, err
+		}
 
 		// Send a single null byte UDP packet
-		syscall.Sendto(sendSocket, []byte{0x0}, 0, &syscall.SockaddrInet4{Port: options.Port(), Addr: destAddr})
+		if _, err := sendSocket.WriteToUDP([]byte{0x0}, &net.UDPAddr{IP: destAddr, Port: options.Port()}); err != nil {
+			return result, err
+		}
 
-		var p = make([]byte, options.PacketSize())
-		n, from, err := syscall.Recvfrom(recvSocket, p, 0)
+		p := make([]byte, options.PacketSize())
+		n, from, err := recvSocket.ReadFromIP(p)
 		elapsed := time.Since(start)
 		if err == nil {
-			currAddr := from.(*syscall.SockaddrInet4).Addr
+			currAddr := from.IP
 
 			hop := TracerouteHop{Success: true, Address: currAddr, N: n, ElapsedTime: elapsed, TTL: ttl}
 
@@ -241,7 +273,7 @@ func Traceroute(dest string, options *TracerouteOptions, c ...chan TracerouteHop
 			ttl += 1
 			retry = 0
 
-			if ttl > options.MaxHops() || currAddr == destAddr {
+			if ttl > options.MaxHops() || currAddr.Equal(destAddr) {
 				closeNotify(c)
 				return result, nil
 			}

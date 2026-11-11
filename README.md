@@ -9,6 +9,7 @@ Must be run as sudo on OS X (and others)?
 ```sh
 go build cmd/gotraceroute
 sudo ./gotraceroute example.com
+sudo ./gotraceroute -6 example.com
 ```
 
 ## Library
@@ -16,6 +17,9 @@ sudo ./gotraceroute example.com
 See the code in cmd/gotraceroute.go for an example of how to use the library from within your application.
 
 The traceroute.Traceroute() function accepts a domain name and an options struct and returns a TracerouteResult struct that holds an array of TracerouteHop structs.
+
+IPv4 is used unless the options ask for IPv6 (`options.SetIPv6(true)`), in which case the
+destination is resolved and probed over IPv6 with ICMPv6 replies.
 
 ## Resources
 
@@ -29,4 +33,4 @@ Useful resources:
 
 * https://code.google.com/p/go/source/browse/src/pkg/net/ipraw_test.go
 * http://godoc.org/code.google.com/p/go.net/ipv4
-* http://golang.org/pkg/syscall/
+* https://pkg.go.dev/golang.org/x/net/ipv6
