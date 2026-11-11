@@ -1,8 +1,9 @@
-// Package traceroute provides functions for executing a tracroute to a remote
+// Package traceroute provides functions for executing a traceroute to a remote
 // host.
 package traceroute
 
 import (
+	"context"
 	"errors"
 	"net"
 	"time"
@@ -20,8 +21,6 @@ const (
 	DEFAULT_PACKET_SIZE = 52
 )
 
-// Return the first non-loopback address of the requested family. This address
-// is used for sending packets out.
 func socketAddr(useIPv6 bool) (net.IP, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
@@ -45,7 +44,6 @@ func socketAddr(useIPv6 bool) (net.IP, error) {
 	return nil, errors.New("You do not appear to be connected to the Internet")
 }
 
-// Given a host name convert it to an IP address of the requested family.
 func destAddr(dest string, useIPv6 bool) (net.IP, error) {
 	network := "ip4"
 	if useIPv6 {
@@ -58,7 +56,6 @@ func destAddr(dest string, useIPv6 bool) (net.IP, error) {
 	return ipAddr.IP, nil
 }
 
-// TracrouteOptions type
 type TracerouteOptions struct {
 	port       int
 	maxHops    int
@@ -143,7 +140,6 @@ func (options *TracerouteOptions) SetIPv6(ipv6 bool) {
 	options.ipv6 = ipv6
 }
 
-// TracerouteHop type
 type TracerouteHop struct {
 	Success     bool
 	Address     net.IP
@@ -165,7 +161,6 @@ func (hop *TracerouteHop) HostOrAddressString() string {
 	return hostOrAddr
 }
 
-// TracerouteResult type
 type TracerouteResult struct {
 	DestinationAddress net.IP
 	Hops               []TracerouteHop
@@ -214,29 +209,24 @@ func Traceroute(dest string, options *TracerouteOptions, c ...chan TracerouteHop
 	ttl := options.FirstHop()
 	retry := 0
 	for {
-		//log.Println("TTL: ", ttl)
 		start := time.Now()
 
-		// Set up the socket to receive inbound packets
 		recvSocket, err := net.ListenIP(recvNetwork, &net.IPAddr{IP: socketAddr})
 		if err != nil {
 			return result, err
 		}
 		defer recvSocket.Close()
 
-		// This sets the timeout to wait for a response from the remote host
 		if err := recvSocket.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 			return result, err
 		}
 
-		// Set up the socket to send packets out.
 		sendSocket, err := net.ListenUDP(sendNetwork, nil)
 		if err != nil {
 			return result, err
 		}
 		defer sendSocket.Close()
 
-		// This sets the current hop TTL
 		if options.IPv6() {
 			err = ipv6.NewPacketConn(sendSocket).SetHopLimit(ttl)
 		} else {
@@ -246,7 +236,6 @@ func Traceroute(dest string, options *TracerouteOptions, c ...chan TracerouteHop
 			return result, err
 		}
 
-		// Send a single null byte UDP packet
 		if _, err := sendSocket.WriteToUDP([]byte{0x0}, &net.UDPAddr{IP: destAddr, Port: options.Port()}); err != nil {
 			return result, err
 		}
@@ -259,9 +248,9 @@ func Traceroute(dest string, options *TracerouteOptions, c ...chan TracerouteHop
 
 			hop := TracerouteHop{Success: true, Address: currAddr, N: n, ElapsedTime: elapsed, TTL: ttl}
 
-			// TODO: this reverse lookup appears to have some standard timeout that is relatively
-			// high. Consider switching to something where there is greater control.
-			currHost, err := net.LookupAddr(hop.AddressString())
+			resolveCtx, cancel := context.WithTimeout(context.Background(), timeout)
+			currHost, err := net.DefaultResolver.LookupAddr(resolveCtx, hop.AddressString())
+			cancel()
 			if err == nil {
 				hop.Host = currHost[0]
 			}

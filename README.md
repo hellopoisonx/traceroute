@@ -4,17 +4,13 @@ A traceroute library written in Go.
 
 Must be run as sudo on OS X (and others)?
 
-## CLI App
-
-```sh
-go build cmd/gotraceroute
-sudo ./gotraceroute example.com
-sudo ./gotraceroute -6 example.com
-```
-
 ## Library
 
-See the code in cmd/gotraceroute.go for an example of how to use the library from within your application.
+```go
+options := traceroute.TracerouteOptions{}
+options.SetIPv6(true)
+result, err := traceroute.Traceroute("example.com", &options)
+```
 
 The traceroute.Traceroute() function accepts a domain name and an options struct and returns a TracerouteResult struct that holds an array of TracerouteHop structs.
 
